@@ -1,0 +1,6 @@
+caught_pokemon.json
+player_profile.json
+player_sprite.png
+__pycache__/
+*.pyc
+.DS_Store
