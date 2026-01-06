@@ -3,30 +3,364 @@ from tkinter import messagebox, simpledialog, filedialog
 from PIL import Image, ImageTk, ImageDraw
 import requests
 import random
-import json
+import sqlite3
 import os
 from io import BytesIO
 from datetime import datetime, timedelta
 
 # Configuration
-POKEDEX_FILE = "caught_pokemon.json"
-PROFILE_FILE = "player_profile.json"
+DATABASE_FILE = "pokemon_game.db"
 PLAYER_SPRITE_FILE = "player_sprite.png"
-SHINY_CHANCE = 1/100
-ENCOUNTER_CHANCE = 0.15  # 15% chance per step
-FLEE_CHANCE_POKEBALL = 0.20  # 20% chance to flee when pokeball fails
+SHINY_CHANCE = 1/10
+ENCOUNTER_CHANCE = 0.15
+# 5% chance to flee after Poké Ball The 20% is way too high after testing.
+FLEE_CHANCE_POKEBALL = 0.05
 
 # Legendary Pokémon IDs (Gen 1-8)
 LEGENDARY_IDS = {
-    144, 145, 146, 150, 151,  # Gen 1
-    243, 244, 245, 249, 250, 251,  # Gen 2
-    377, 378, 379, 380, 381, 382, 383, 384, 385, 386,  # Gen 3
-    480, 481, 482, 483, 484, 487, 488, 489, 490, 491, 492, 493,  # Gen 4
-    494, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649,  # Gen 5
-    716, 717, 718, 719, 720, 721,  # Gen 6
-    772, 773, 785, 786, 787, 788, 789, 790, 791, 792, 800, 801, 802, 807, 808, 809,  # Gen 7
-    888, 889, 890, 891, 892, 893, 894, 895, 896, 897, 898  # Gen 8
+    144, 145, 146, 150, 151,
+    243, 244, 245, 249, 250, 251,
+    377, 378, 379, 380, 381, 382, 383, 384, 385, 386,
+    480, 481, 482, 483, 484, 487, 488, 489, 490, 491, 492, 493,
+    494, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649,
+    716, 717, 718, 719, 720, 721,
+    772, 773, 785, 786, 787, 788, 789, 790, 791, 792, 800, 801, 802, 807, 808, 809,
+    888, 889, 890, 891, 892, 893, 894, 895, 896, 897, 898
 }
+
+# Badge milestones
+BADGE_MILESTONES = {
+    'first_shiny': {'name': '✨ First Shiny', 'requirement': 1, 'type': 'shiny'},
+    'shiny_10': {'name': '✨ Shiny Collector', 'requirement': 10, 'type': 'shiny'},
+    'shiny_100': {'name': '✨ Shiny Master', 'requirement': 100, 'type': 'shiny'},
+    'catch_500': {'name': '🏆 Pokémon Trainer', 'requirement': 500, 'type': 'total'},
+    'catch_1000': {'name': '🏆 Pokémon Master', 'requirement': 1000, 'type': 'total'},
+    'catch_10000': {'name': '👑 LEGENDARY TRAINER', 'requirement': 10000, 'type': 'total'}
+}
+
+
+class Database:
+    """Handle all database operations"""
+
+    def __init__(self, db_file):
+        self.db_file = db_file
+        self.init_database()
+
+    def get_connection(self):
+        """Get database connection"""
+        return sqlite3.connect(self.db_file)
+
+    def init_database(self):
+        """Initialize database tables"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # Players table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS players (
+                player_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_played TEXT NOT NULL,
+                total_steps INTEGER DEFAULT 0,
+                total_encounters INTEGER DEFAULT 0,
+                total_catches INTEGER DEFAULT 0,
+                total_playtime INTEGER DEFAULT 0
+            )
+        ''')
+
+        # Caught Pokémon table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS caught_pokemon (
+                catch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id INTEGER NOT NULL,
+                pokemon_id INTEGER NOT NULL,
+                pokemon_name TEXT NOT NULL,
+                is_shiny BOOLEAN NOT NULL,
+                is_legendary BOOLEAN NOT NULL,
+                caught_at TEXT NOT NULL,
+                FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
+            )
+        ''')
+
+        # Badges table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS badges (
+                badge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id INTEGER NOT NULL,
+                badge_key TEXT NOT NULL,
+                badge_name TEXT NOT NULL,
+                earned_at TEXT NOT NULL,
+                FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE,
+                UNIQUE(player_id, badge_key)
+            )
+        ''')
+
+        # Battle history table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS battles (
+                battle_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id INTEGER NOT NULL,
+                pokemon_id INTEGER NOT NULL,
+                pokemon_name TEXT NOT NULL,
+                is_shiny BOOLEAN NOT NULL,
+                is_legendary BOOLEAN NOT NULL,
+                result TEXT NOT NULL,
+                attempts INTEGER DEFAULT 1,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
+            )
+        ''')
+
+        conn.commit()
+        conn.close()
+
+    def create_player(self, name):
+        """Create a new player"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        now = datetime.now().isoformat()
+        cursor.execute('''
+            INSERT INTO players (name, created_at, last_played)
+            VALUES (?, ?, ?)
+        ''', (name, now, now))
+
+        player_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        return player_id
+
+    def get_player(self, player_id):
+        """Get player data"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'SELECT * FROM players WHERE player_id = ?', (player_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return {
+                'player_id': row[0],
+                'name': row[1],
+                'created_at': datetime.fromisoformat(row[2]),
+                'last_played': datetime.fromisoformat(row[3]),
+                'total_steps': row[4],
+                'total_encounters': row[5],
+                'total_catches': row[6],
+                'total_playtime': row[7]
+            }
+        return None
+
+    def get_latest_player(self):
+        """Get the most recently played player"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'SELECT player_id FROM players ORDER BY last_played DESC LIMIT 1')
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return self.get_player(row[0])
+        return None
+
+    def update_player(self, player_id, **kwargs):
+        """Update player stats"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # Build dynamic UPDATE query
+        fields = []
+        values = []
+        for key, value in kwargs.items():
+            if key in ['total_steps', 'total_encounters', 'total_catches', 'total_playtime', 'last_played']:
+                fields.append(f"{key} = ?")
+                if key == 'last_played' and isinstance(value, datetime):
+                    values.append(value.isoformat())
+                else:
+                    values.append(value)
+
+        if fields:
+            values.append(player_id)
+            query = f"UPDATE players SET {', '.join(fields)} WHERE player_id = ?"
+            cursor.execute(query, values)
+            conn.commit()
+
+        conn.close()
+
+    def delete_player(self, player_id):
+        """Delete a player and all their data"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('DELETE FROM players WHERE player_id = ?', (player_id,))
+        conn.commit()
+        conn.close()
+
+    def add_caught_pokemon(self, player_id, pokemon_id, pokemon_name, is_shiny, is_legendary):
+        """Add a caught Pokémon"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        now = datetime.now().isoformat()
+        cursor.execute('''
+            INSERT INTO caught_pokemon 
+            (player_id, pokemon_id, pokemon_name, is_shiny, is_legendary, caught_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (player_id, pokemon_id, pokemon_name, is_shiny, is_legendary, now))
+
+        conn.commit()
+        conn.close()
+
+    def get_caught_pokemon(self, player_id):
+        """Get all caught Pokémon for a player"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT pokemon_id, pokemon_name, is_shiny, is_legendary, caught_at
+            FROM caught_pokemon
+            WHERE player_id = ?
+            ORDER BY caught_at DESC
+        ''', (player_id,))
+
+        pokemon = []
+        for row in cursor.fetchall():
+            pokemon.append({
+                'pokemon_id': row[0],
+                'pokemon_name': row[1],
+                'is_shiny': bool(row[2]),
+                'is_legendary': bool(row[3]),
+                'caught_at': row[4]
+            })
+
+        conn.close()
+        return pokemon
+
+    def get_shiny_count(self, player_id):
+        """Get count of shiny Pokémon"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT COUNT(*) FROM caught_pokemon
+            WHERE player_id = ? AND is_shiny = 1
+        ''', (player_id,))
+
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+
+    def get_legendary_count(self, player_id):
+        """Get count of legendary Pokémon"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT COUNT(*) FROM caught_pokemon
+            WHERE player_id = ? AND is_legendary = 1
+        ''', (player_id,))
+
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+
+    def add_badge(self, player_id, badge_key, badge_name):
+        """Award a badge to a player"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        now = datetime.now().isoformat()
+        try:
+            cursor.execute('''
+                INSERT INTO badges (player_id, badge_key, badge_name, earned_at)
+                VALUES (?, ?, ?, ?)
+            ''', (player_id, badge_key, badge_name, now))
+            conn.commit()
+            conn.close()
+            return True
+        except sqlite3.IntegrityError:
+            # Badge already exists
+            conn.close()
+            return False
+
+    def get_badges(self, player_id):
+        """Get all badges for a player"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT badge_key, badge_name, earned_at
+            FROM badges
+            WHERE player_id = ?
+            ORDER BY earned_at
+        ''', (player_id,))
+
+        badges = []
+        for row in cursor.fetchall():
+            badges.append({
+                'badge_key': row[0],
+                'badge_name': row[1],
+                'earned_at': row[2]
+            })
+
+        conn.close()
+        return badges
+
+    def add_battle(self, player_id, pokemon_id, pokemon_name, is_shiny, is_legendary, result, attempts=1):
+        """Record a battle"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        now = datetime.now().isoformat()
+        cursor.execute('''
+            INSERT INTO battles 
+            (player_id, pokemon_id, pokemon_name, is_shiny, is_legendary, result, attempts, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (player_id, pokemon_id, pokemon_name, is_shiny, is_legendary, result, attempts, now))
+
+        conn.commit()
+        conn.close()
+
+    def get_battle_stats(self, player_id):
+        """Get battle statistics"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # Total battles
+        cursor.execute(
+            'SELECT COUNT(*) FROM battles WHERE player_id = ?', (player_id,))
+        total_battles = cursor.fetchone()[0]
+
+        # Caught
+        cursor.execute(
+            'SELECT COUNT(*) FROM battles WHERE player_id = ? AND result = "caught"', (player_id,))
+        caught = cursor.fetchone()[0]
+
+        # Fled
+        cursor.execute(
+            'SELECT COUNT(*) FROM battles WHERE player_id = ? AND result = "fled"', (player_id,))
+        fled = cursor.fetchone()[0]
+
+        # Fainted
+        cursor.execute(
+            'SELECT COUNT(*) FROM battles WHERE player_id = ? AND result = "fainted"', (player_id,))
+        fainted = cursor.fetchone()[0]
+
+        conn.close()
+
+        return {
+            'total_battles': total_battles,
+            'caught': caught,
+            'fled': fled,
+            'fainted': fainted,
+            'catch_rate': (caught / total_battles * 100) if total_battles > 0 else 0
+        }
 
 
 class PixelArtCreator:
@@ -45,11 +379,9 @@ class PixelArtCreator:
         self.grid = [["white" for _ in range(self.grid_size)]
                      for _ in range(self.grid_size)]
 
-        # Title
         tk.Label(self.window, text="Create Your Pixel Art Character",
                  font=("Arial", 16, "bold")).pack(pady=10)
 
-        # Canvas
         canvas_size = self.grid_size * self.pixel_size
         self.canvas = tk.Canvas(self.window, width=canvas_size,
                                 height=canvas_size, bg="white",
@@ -58,7 +390,6 @@ class PixelArtCreator:
         self.canvas.bind("<Button-1>", self.paint_pixel)
         self.canvas.bind("<B1-Motion>", self.paint_pixel)
 
-        # Color palette (common colors)
         palette_frame = tk.Frame(self.window)
         palette_frame.pack(pady=10)
 
@@ -80,16 +411,13 @@ class PixelArtCreator:
                             command=lambda c=color: self.set_color(c))
             btn.grid(row=i//6, column=i % 6, padx=2, pady=2)
 
-        # Custom color picker
         tk.Button(self.window, text="🎨 Custom Color",
                   command=self.choose_custom_color).pack(pady=5)
 
-        # Current color indicator
         self.color_label = tk.Label(self.window, text="Current Color",
                                     bg=self.current_color, width=20, height=2)
         self.color_label.pack(pady=5)
 
-        # Action buttons
         button_frame = tk.Frame(self.window)
         button_frame.pack(pady=10)
 
@@ -132,7 +460,6 @@ class PixelArtCreator:
                      for _ in range(self.grid_size)]
 
     def save(self):
-        # Create image from grid
         img = Image.new("RGBA", (self.grid_size, self.grid_size))
         pixels = img.load()
 
@@ -140,14 +467,12 @@ class PixelArtCreator:
             for x in range(self.grid_size):
                 color = self.grid[y][x]
                 if color == "white":
-                    pixels[x, y] = (255, 255, 255, 0)  # Transparent
+                    pixels[x, y] = (255, 255, 255, 0)
                 else:
-                    # Convert hex to RGB
                     color = color.lstrip('#')
                     rgb = tuple(int(color[i:i+2], 16) for i in (0, 2, 4))
                     pixels[x, y] = rgb + (255,)
 
-        # Save and callback
         img.save(PLAYER_SPRITE_FILE, "PNG")
         self.callback()
         self.window.destroy()
@@ -160,22 +485,27 @@ class PokemonCatchingGame:
         self.root.title("Pokémon Catching Game")
         self.root.geometry("800x900")
 
-        # Load or create profile
-        self.profile = self.load_profile()
-        if not self.profile:
+        # Initialize database
+        self.db = Database(DATABASE_FILE)
+
+        # Load or create player
+        self.player = self.db.get_latest_player()
+        if not self.player:
             self.create_profile()
+        else:
+            self.player_id = self.player['player_id']
 
         # Game state
         self.current_pokemon = None
         self.pokemon_health = 100
         self.max_health = 100
         self.bait_used = 0
-        self.caught_pokemon = self.load_pokedex()
         self.in_battle = False
         self.steps = 0
         self.session_start = datetime.now()
         self.player_x = 200
         self.player_y = 200
+        self.catch_attempts = 0
 
         # Load player sprite
         self.player_sprite = self.load_player_sprite()
@@ -186,28 +516,6 @@ class PokemonCatchingGame:
         # Start in exploration mode
         self.exploration_mode()
 
-    def load_profile(self):
-        """Load player profile"""
-        if os.path.exists(PROFILE_FILE):
-            with open(PROFILE_FILE, 'r') as f:
-                profile = json.load(f)
-                profile['created_at'] = datetime.fromisoformat(
-                    profile['created_at'])
-                profile['last_played'] = datetime.fromisoformat(
-                    profile['last_played'])
-                return profile
-        return None
-
-    def save_profile(self):
-        """Save player profile"""
-        self.profile['last_played'] = datetime.now()
-        profile_copy = self.profile.copy()
-        profile_copy['created_at'] = profile_copy['created_at'].isoformat()
-        profile_copy['last_played'] = profile_copy['last_played'].isoformat()
-
-        with open(PROFILE_FILE, 'w') as f:
-            json.dump(profile_copy, f, indent=2)
-
     def create_profile(self):
         """Create new player profile"""
         name = simpledialog.askstring(
@@ -215,18 +523,9 @@ class PokemonCatchingGame:
         if not name:
             name = "Trainer"
 
-        self.profile = {
-            'name': name,
-            'created_at': datetime.now(),
-            'last_played': datetime.now(),
-            'total_steps': 0,
-            'total_encounters': 0,
-            'total_catches': 0,
-            'total_playtime': 0
-        }
-        self.save_profile()
+        self.player_id = self.db.create_player(name)
+        self.player = self.db.get_player(self.player_id)
 
-        # Ask about sprite
         response = messagebox.askquestion("Player Sprite",
                                           "Would you like to create your character?\n\n"
                                           "Yes - Create pixel art character\n"
@@ -238,6 +537,78 @@ class PokemonCatchingGame:
             if messagebox.askyesno("Upload Sprite", "Upload an image for your character?"):
                 self.upload_player_sprite()
 
+    def switch_profile(self):
+        """Switch to a different profile or create new one"""
+        response = messagebox.askyesno(
+            "Switch Profile",
+            "Do you want to create a NEW profile?\n\n"
+            "Yes - Create new profile\n"
+            "No - Cancel"
+        )
+
+        if response:
+            session_time = (datetime.now() - self.session_start).seconds
+            new_playtime = self.player['total_playtime'] + session_time
+            self.db.update_player(
+                self.player_id,
+                total_playtime=new_playtime,
+                last_played=datetime.now()
+            )
+
+            self.create_profile()
+
+            self.steps = 0
+            self.session_start = datetime.now()
+            self.update_profile_display()
+            self.update_stats()
+            self.exploration_mode()
+
+            messagebox.showinfo("Profile Switched",
+                                f"Welcome, Trainer {self.player['name']}!")
+
+    def delete_profile(self):
+        """Delete current profile and all data"""
+        response = messagebox.askyesno(
+            "⚠️ Delete Profile",
+            f"Are you SURE you want to delete Trainer {self.player['name']}'s profile?\n\n"
+            "This will delete:\n"
+            "- All caught Pokémon\n"
+            "- All badges\n"
+            "- All battle history\n"
+            "- All progress\n\n"
+            "THIS CANNOT BE UNDONE!"
+        )
+
+        if response:
+            confirm = messagebox.askyesno(
+                "⚠️ FINAL WARNING",
+                "This is your LAST CHANCE!\n\n"
+                "Delete everything and start over?"
+            )
+
+            if confirm:
+                try:
+                    self.db.delete_player(self.player_id)
+
+                    if os.path.exists(PLAYER_SPRITE_FILE):
+                        os.remove(PLAYER_SPRITE_FILE)
+
+                    messagebox.showinfo(
+                        "Profile Deleted", "All data has been deleted.")
+
+                    self.create_profile()
+
+                    self.steps = 0
+                    self.session_start = datetime.now()
+                    self.player_sprite = self.load_player_sprite()
+                    self.update_profile_display()
+                    self.update_stats()
+                    self.exploration_mode()
+
+                except Exception as e:
+                    messagebox.showerror(
+                        "Error", f"Could not delete profile: {e}")
+
     def create_pixel_character(self):
         """Open pixel art creator"""
         PixelArtCreator(self.root, self.reload_player_sprite)
@@ -245,8 +616,6 @@ class PokemonCatchingGame:
     def reload_player_sprite(self):
         """Reload player sprite after creation"""
         self.player_sprite = self.load_player_sprite()
-        if hasattr(self, 'player_sprite_label'):
-            self.player_sprite_label.config(image=self.player_sprite)
 
     def load_player_sprite(self):
         """Load player sprite or use default"""
@@ -258,7 +627,6 @@ class PokemonCatchingGame:
             except:
                 pass
 
-        # Create default sprite (simple circle)
         img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         draw.ellipse([8, 8, 56, 56], fill='blue', outline='darkblue', width=3)
@@ -278,92 +646,104 @@ class PokemonCatchingGame:
                 img.save(PLAYER_SPRITE_FILE, "PNG")
                 self.player_sprite = ImageTk.PhotoImage(img)
                 messagebox.showinfo("Success", "Player sprite uploaded!")
-                if hasattr(self, 'player_sprite_label'):
-                    self.player_sprite_label.config(image=self.player_sprite)
             except Exception as e:
                 messagebox.showerror("Error", f"Could not load image: {e}")
 
     def setup_ui(self):
         """Create the game interface"""
-        # Title with player name
         self.title_label = tk.Label(self.root,
-                                    text=f"Trainer {self.profile['name']}'s Adventure",
+                                    text=f"Trainer {self.player['name']}'s Adventure",
                                     font=("Arial", 20, "bold"))
         self.title_label.pack(pady=10)
 
-        # Profile stats
         self.profile_label = tk.Label(self.root, text="", font=("Arial", 11))
         self.profile_label.pack()
         self.update_profile_display()
 
-        # Stats frame
         stats_frame = tk.Frame(self.root)
         stats_frame.pack(pady=5)
 
+        caught_count = len(self.db.get_caught_pokemon(self.player_id))
         self.stats_label = tk.Label(stats_frame,
-                                    text=f"Pokédex: {len(self.caught_pokemon)} | Steps: 0",
+                                    text=f"Pokédex: {caught_count} | Steps: 0",
                                     font=("Arial", 14, "bold"))
         self.stats_label.pack()
 
-        # Main display area
         self.main_frame = tk.Frame(
             self.root, width=600, height=500, bg="lightblue")
         self.main_frame.pack(pady=20)
         self.main_frame.pack_propagate(False)
 
-        # This will hold either exploration or battle content
         self.content_frame = tk.Frame(self.main_frame, bg="lightblue")
         self.content_frame.pack(expand=True, fill=tk.BOTH)
 
-        # Message log
         self.message_label = tk.Label(self.root, text="Press WASD or Arrow keys to walk!",
                                       font=("Arial", 12, "italic"),
                                       fg="blue", wraplength=700)
         self.message_label.pack(pady=10)
 
-        # Bottom buttons (always visible)
         bottom_frame = tk.Frame(self.root)
         bottom_frame.pack(pady=10)
 
         tk.Button(bottom_frame, text="📖 Pokédex",
-                  font=("Arial", 11),
+                  font=("Arial", 10),
                   command=self.show_pokedex,
-                  width=12).pack(side=tk.LEFT, padx=3)
+                  width=9).pack(side=tk.LEFT, padx=2)
 
         tk.Button(bottom_frame, text="👤 Profile",
-                  font=("Arial", 11),
+                  font=("Arial", 10),
                   command=self.show_profile,
-                  width=12).pack(side=tk.LEFT, padx=3)
+                  width=9).pack(side=tk.LEFT, padx=2)
 
-        tk.Button(bottom_frame, text="🎨 Create Sprite",
-                  font=("Arial", 11),
+        tk.Button(bottom_frame, text="🏅 Badges",
+                  font=("Arial", 10),
+                  command=self.show_badges,
+                  width=9).pack(side=tk.LEFT, padx=2)
+
+        tk.Button(bottom_frame, text="📊 Stats",
+                  font=("Arial", 10),
+                  command=self.show_stats,
+                  width=9).pack(side=tk.LEFT, padx=2)
+
+        tk.Button(bottom_frame, text="🎨 Create",
+                  font=("Arial", 10),
                   command=self.create_pixel_character,
-                  width=12).pack(side=tk.LEFT, padx=3)
+                  width=9).pack(side=tk.LEFT, padx=2)
 
-        tk.Button(bottom_frame, text="📤 Upload Sprite",
-                  font=("Arial", 11),
-                  command=self.upload_player_sprite,
-                  width=12).pack(side=tk.LEFT, padx=3)
+        tk.Button(bottom_frame, text="🔄 Switch",
+                  font=("Arial", 10),
+                  command=self.switch_profile,
+                  width=9).pack(side=tk.LEFT, padx=2)
 
-        # Bind movement keys
+        tk.Button(bottom_frame, text="🗑️ Delete",
+                  font=("Arial", 10),
+                  command=self.delete_profile,
+                  bg="#FF6B6B",
+                  width=9).pack(side=tk.LEFT, padx=2)
+
         self.root.bind('<KeyPress>', self.handle_keypress)
 
     def update_profile_display(self):
         """Update profile info display"""
-        playtime = timedelta(seconds=self.profile['total_playtime'])
+        playtime = timedelta(seconds=self.player['total_playtime'])
         hours = int(playtime.total_seconds() // 3600)
         minutes = int((playtime.total_seconds() % 3600) // 60)
 
+        badges = self.db.get_badges(self.player_id)
+        badge_count = len(badges)
+
         self.profile_label.config(
-            text=f"Playtime: {hours}h {minutes}m | Encounters: {self.profile['total_encounters']} | Catches: {self.profile['total_catches']}"
+            text=f"Playtime: {hours}h {minutes}m | Encounters: {self.player['total_encounters']} | Catches: {self.player['total_catches']} | Badges: {badge_count}"
         )
+
+        self.title_label.config(
+            text=f"Trainer {self.player['name']}'s Adventure")
 
     def handle_keypress(self, event):
         """Handle keyboard input for movement"""
         if self.in_battle:
             return
 
-        # WASD or Arrow keys
         move_distance = 20
         if event.keysym in ['w', 'W', 'Up']:
             self.player_y = max(32, self.player_y - move_distance)
@@ -381,15 +761,15 @@ class PokemonCatchingGame:
     def take_step(self):
         """Player takes a step, chance to encounter Pokémon"""
         self.steps += 1
-        self.profile['total_steps'] += 1
+        new_steps = self.player['total_steps'] + 1
+        self.db.update_player(self.player_id, total_steps=new_steps)
+        self.player['total_steps'] = new_steps
         self.update_stats()
 
-        # Update player position on canvas
         if hasattr(self, 'exploration_canvas'):
             self.exploration_canvas.coords(self.player_sprite_id,
                                            self.player_x, self.player_y)
 
-        # Check for encounter
         if random.random() < ENCOUNTER_CHANCE:
             self.encounter_pokemon()
         else:
@@ -399,26 +779,22 @@ class PokemonCatchingGame:
         """Show exploration UI with walking player"""
         self.in_battle = False
 
-        # Clear content frame
         for widget in self.content_frame.winfo_children():
             widget.destroy()
 
         self.content_frame.config(bg="lightgreen")
 
-        # Create canvas for the overworld
         self.exploration_canvas = tk.Canvas(self.content_frame,
                                             width=600, height=500,
                                             bg="#90EE90")
         self.exploration_canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Draw grass pattern
         for i in range(0, 600, 40):
             for j in range(0, 500, 40):
                 shade = random.choice(["#90EE90", "#7CCD7C", "#A8E6A3"])
                 self.exploration_canvas.create_rectangle(i, j, i+40, j+40,
                                                          fill=shade, outline="")
 
-        # Add some trees/bushes
         for _ in range(15):
             x = random.randint(50, 550)
             y = random.randint(50, 450)
@@ -426,13 +802,11 @@ class PokemonCatchingGame:
             self.exploration_canvas.create_oval(x-size, y-size, x+size, y+size,
                                                 fill="darkgreen", outline="")
 
-        # Instructions
         self.exploration_canvas.create_text(300, 30,
                                             text="🌳 Use WASD or Arrows to explore! 🌳",
                                             font=("Arial", 16, "bold"),
                                             fill="white")
 
-        # Draw player sprite
         self.player_sprite_id = self.exploration_canvas.create_image(
             self.player_x, self.player_y,
             image=self.player_sprite
@@ -443,7 +817,12 @@ class PokemonCatchingGame:
     def encounter_pokemon(self):
         """Trigger a Pokémon encounter"""
         self.in_battle = True
-        self.profile['total_encounters'] += 1
+        self.catch_attempts = 0
+
+        new_encounters = self.player['total_encounters'] + 1
+        self.db.update_player(self.player_id, total_encounters=new_encounters)
+        self.player['total_encounters'] = new_encounters
+
         self.pokemon_health = self.max_health
         self.bait_used = 0
 
@@ -482,15 +861,13 @@ class PokemonCatchingGame:
         for widget in self.content_frame.winfo_children():
             widget.destroy()
 
-        # Different background for legendary
         if self.current_pokemon['is_legendary']:
-            bg_color = "#2D1B4E"  # Dark purple for legendary
+            bg_color = "#2D1B4E"
         else:
-            bg_color = "#FFFACD"  # Light yellow for normal
+            bg_color = "#FFFACD"
 
         self.content_frame.config(bg=bg_color)
 
-        # Top section - Pokemon info
         top_frame = tk.Frame(self.content_frame, bg=bg_color)
         top_frame.pack(pady=10)
 
@@ -501,7 +878,6 @@ class PokemonCatchingGame:
                                       fg="white" if self.current_pokemon['is_legendary'] else "black")
         self.pokemon_label.pack()
 
-        # Legendary/Shiny indicators
         indicators_frame = tk.Frame(top_frame, bg=bg_color)
         indicators_frame.pack()
 
@@ -521,7 +897,6 @@ class PokemonCatchingGame:
         if self.current_pokemon['is_shiny']:
             self.shiny_label.config(text="✨ SHINY ✨")
 
-        # Add sparkles for legendary background
         if self.current_pokemon['is_legendary']:
             sparkle_canvas = tk.Canvas(self.content_frame, width=600, height=50,
                                        bg=bg_color, highlightthickness=0)
@@ -535,7 +910,6 @@ class PokemonCatchingGame:
                 sparkle_canvas.create_oval(
                     x-size, y-size, x+size, y+size, fill=color, outline="")
 
-        # Sprite
         sprite_frame = tk.Frame(self.content_frame, bg=bg_color)
         sprite_frame.pack(pady=10)
 
@@ -553,7 +927,6 @@ class PokemonCatchingGame:
         except Exception as e:
             print(f"Error loading sprite: {e}")
 
-        # Health bar
         health_frame = tk.Frame(self.content_frame, bg=bg_color)
         health_frame.pack(pady=10)
 
@@ -572,11 +945,9 @@ class PokemonCatchingGame:
 
         self.update_health_bar()
 
-        # Action buttons
         actions_frame = tk.Frame(self.content_frame, bg=bg_color)
         actions_frame.pack(pady=20)
 
-        # Row 1: Bait and Rock
         row1 = tk.Frame(actions_frame, bg=bg_color)
         row1.pack(pady=5)
 
@@ -592,7 +963,6 @@ class PokemonCatchingGame:
                   command=self.throw_rock,
                   width=15, height=2).pack(side=tk.LEFT, padx=10)
 
-        # Row 2: Pokeball and Run
         row2 = tk.Frame(actions_frame, bg=bg_color)
         row2.pack(pady=5)
 
@@ -608,7 +978,6 @@ class PokemonCatchingGame:
                   command=self.run_away,
                   width=15, height=2).pack(side=tk.LEFT, padx=10)
 
-        # Tips
         tips_frame = tk.Frame(self.content_frame, bg=bg_color)
         tips_frame.pack(pady=10)
 
@@ -667,6 +1036,25 @@ class PokemonCatchingGame:
 
         self.update_health_bar()
 
+        if self.pokemon_health <= 0:
+            self.show_message(
+                f"💀 {self.current_pokemon['name']} fainted!")
+            messagebox.showinfo("Fainted!",
+                                f"{self.current_pokemon['name']} has fainted!\n\nYou cannot catch a fainted Pokémon.")
+
+            self.db.add_battle(
+                self.player_id,
+                self.current_pokemon['id'],
+                self.current_pokemon['name'],
+                self.current_pokemon['is_shiny'],
+                self.current_pokemon['is_legendary'],
+                'fainted',
+                self.catch_attempts
+            )
+
+            self.root.after(1500, self.exploration_mode)
+            return
+
         flee_chance = 1/3
         flee_reduction = self.bait_used * 0.1
         actual_flee_chance = max(0.05, flee_chance - flee_reduction)
@@ -676,17 +1064,28 @@ class PokemonCatchingGame:
                 f"🪨 Threw a rock! {self.current_pokemon['name']} took {damage} damage and fled! 💨")
             messagebox.showwarning(
                 "Fled!", f"{self.current_pokemon['name']} was scared and ran away!")
+
+            self.db.add_battle(
+                self.player_id,
+                self.current_pokemon['id'],
+                self.current_pokemon['name'],
+                self.current_pokemon['is_shiny'],
+                self.current_pokemon['is_legendary'],
+                'fled',
+                self.catch_attempts
+            )
+
             self.root.after(1500, self.exploration_mode)
         else:
             self.show_message(
                 f"🪨 Threw a rock! {self.current_pokemon['name']} took {damage} damage but stayed!")
 
     def calculate_catch_rate(self):
-        """Calculate current catch probability"""
+        """Calculate current catch probability - LOWER HEALTH = EASIER CATCH"""
         base_rate = self.current_pokemon['base_catch_rate']
 
         health_pct = self.pokemon_health / self.max_health
-        health_modifier = 1 + (1 - health_pct) * 0.5
+        health_modifier = 1 + (1 - health_pct) * 1.0
 
         bait_penalty = self.bait_used * 0.05
 
@@ -702,6 +1101,13 @@ class PokemonCatchingGame:
         if not self.current_pokemon:
             return
 
+        self.catch_attempts += 1
+
+        if self.pokemon_health <= 0:
+            messagebox.showerror("Cannot Catch",
+                                 f"{self.current_pokemon['name']} has fainted!\n\nYou cannot catch a fainted Pokémon.")
+            return
+
         catch_rate = self.calculate_catch_rate()
         catch_roll = random.random()
 
@@ -712,8 +1118,7 @@ class PokemonCatchingGame:
         if catch_roll < catch_rate:
             self.catch_success()
         else:
-            # Failed catch - check if Pokémon flees
-            flee_reduction = self.bait_used * 0.05  # Bait reduces flee chance
+            flee_reduction = self.bait_used * 0.05
             actual_flee_chance = max(
                 0.05, FLEE_CHANCE_POKEBALL - flee_reduction)
 
@@ -722,6 +1127,17 @@ class PokemonCatchingGame:
                     f"💥 {self.current_pokemon['name']} broke free and fled! 💨")
                 messagebox.showwarning("Fled!",
                                        f"{self.current_pokemon['name']} broke out of the Pokéball and ran away!")
+
+                self.db.add_battle(
+                    self.player_id,
+                    self.current_pokemon['id'],
+                    self.current_pokemon['name'],
+                    self.current_pokemon['is_shiny'],
+                    self.current_pokemon['is_legendary'],
+                    'fled',
+                    self.catch_attempts
+                )
+
                 self.root.after(1500, self.exploration_mode)
             else:
                 self.show_message(
@@ -729,20 +1145,27 @@ class PokemonCatchingGame:
 
     def catch_success(self):
         """Handle successful catch"""
-        pokemon_key = f"{self.current_pokemon['id']}"
-        if self.current_pokemon['is_shiny']:
-            pokemon_key += "_shiny"
+        self.db.add_caught_pokemon(
+            self.player_id,
+            self.current_pokemon['id'],
+            self.current_pokemon['name'],
+            self.current_pokemon['is_shiny'],
+            self.current_pokemon['is_legendary']
+        )
 
-        self.caught_pokemon[pokemon_key] = {
-            'name': self.current_pokemon['name'],
-            'id': self.current_pokemon['id'],
-            'is_shiny': self.current_pokemon['is_shiny'],
-            'is_legendary': self.current_pokemon['is_legendary']
-        }
+        new_catches = self.player['total_catches'] + 1
+        self.db.update_player(self.player_id, total_catches=new_catches)
+        self.player['total_catches'] = new_catches
 
-        self.save_pokedex()
-        self.profile['total_catches'] += 1
-        self.save_profile()
+        self.db.add_battle(
+            self.player_id,
+            self.current_pokemon['id'],
+            self.current_pokemon['name'],
+            self.current_pokemon['is_shiny'],
+            self.current_pokemon['is_legendary'],
+            'caught',
+            self.catch_attempts
+        )
 
         special_text = ""
         if self.current_pokemon['is_shiny']:
@@ -753,11 +1176,36 @@ class PokemonCatchingGame:
         self.show_message(
             f"🎉 Gotcha! {self.current_pokemon['name']} was caught!{special_text}")
 
+        caught_count = len(self.db.get_caught_pokemon(self.player_id))
         messagebox.showinfo("Success!",
                             f"Gotcha! {self.current_pokemon['name']} was caught!{special_text}\n\n"
-                            f"Pokédex: {len(self.caught_pokemon)}")
+                            f"Pokédex: {caught_count}")
+
+        self.check_and_award_badges()
+        self.update_profile_display()
+        self.update_stats()
 
         self.exploration_mode()
+
+    def check_and_award_badges(self):
+        """Check if player earned any new badges"""
+        total_catches = self.player['total_catches']
+        shiny_catches = self.db.get_shiny_count(self.player_id)
+
+        new_badges = []
+
+        for badge_id, badge_info in BADGE_MILESTONES.items():
+            if badge_info['type'] == 'shiny' and shiny_catches >= badge_info['requirement']:
+                if self.db.add_badge(self.player_id, badge_id, badge_info['name']):
+                    new_badges.append(badge_info['name'])
+            elif badge_info['type'] == 'total' and total_catches >= badge_info['requirement']:
+                if self.db.add_badge(self.player_id, badge_id, badge_info['name']):
+                    new_badges.append(badge_info['name'])
+
+        if new_badges:
+            badge_text = "\n".join(new_badges)
+            messagebox.showinfo("🎉 Badge Earned! 🎉",
+                                f"Congratulations! You earned:\n\n{badge_text}")
 
     def run_away(self):
         """Run away from battle"""
@@ -770,25 +1218,16 @@ class PokemonCatchingGame:
 
     def update_stats(self):
         """Update stats display"""
+        caught_count = len(self.db.get_caught_pokemon(self.player_id))
         self.stats_label.config(
-            text=f"Pokédex: {len(self.caught_pokemon)} | Steps: {self.steps}"
+            text=f"Pokédex: {caught_count} | Steps: {self.steps}"
         )
-
-    def load_pokedex(self):
-        """Load caught Pokémon from file"""
-        if os.path.exists(POKEDEX_FILE):
-            with open(POKEDEX_FILE, 'r') as f:
-                return json.load(f)
-        return {}
-
-    def save_pokedex(self):
-        """Save caught Pokémon to file"""
-        with open(POKEDEX_FILE, 'w') as f:
-            json.dump(self.caught_pokemon, f, indent=2)
 
     def show_pokedex(self):
         """Show caught Pokémon"""
-        if not self.caught_pokemon:
+        caught_pokemon = self.db.get_caught_pokemon(self.player_id)
+
+        if not caught_pokemon:
             messagebox.showinfo(
                 "Pokédex", "You haven't caught any Pokémon yet!")
             return
@@ -800,11 +1239,9 @@ class PokemonCatchingGame:
         tk.Label(pokedex_window, text="Your Pokédex",
                  font=("Arial", 18, "bold")).pack(pady=10)
 
-        total = len(self.caught_pokemon)
-        shinies = sum(1 for p in self.caught_pokemon.values()
-                      if p.get('is_shiny'))
-        legendaries = sum(1 for p in self.caught_pokemon.values()
-                          if p.get('is_legendary'))
+        total = len(caught_pokemon)
+        shinies = self.db.get_shiny_count(self.player_id)
+        legendaries = self.db.get_legendary_count(self.player_id)
 
         tk.Label(pokedex_window,
                  text=f"Total: {total} | Shinies: {shinies} | Legendaries: {legendaries}",
@@ -823,42 +1260,219 @@ class PokemonCatchingGame:
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        for key, pokemon in sorted(self.caught_pokemon.items(), key=lambda x: x[1]['id']):
+        for pokemon in sorted(caught_pokemon, key=lambda x: x['pokemon_id']):
             markers = ""
-            if pokemon.get('is_shiny'):
+            if pokemon['is_shiny']:
                 markers += "✨"
-            if pokemon.get('is_legendary'):
+            if pokemon['is_legendary']:
                 markers += "⚡"
 
-            entry_text = f"#{pokemon['id']:03d} - {pokemon['name']} {markers}"
+            entry_text = f"#{pokemon['pokemon_id']:03d} - {pokemon['pokemon_name']} {markers}"
             tk.Label(scrollable_frame, text=entry_text,
                      font=("Arial", 12)).pack(pady=2, anchor="w", padx=20)
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+    def show_badges(self):
+        """Show earned badges"""
+        badges_window = tk.Toplevel(self.root)
+        badges_window.title("Badge Collection")
+        badges_window.geometry("500x600")
+
+        tk.Label(badges_window, text="🏅 Your Badges 🏅",
+                 font=("Arial", 18, "bold")).pack(pady=10)
+
+        total_catches = self.player['total_catches']
+        shiny_catches = self.db.get_shiny_count(self.player_id)
+        earned_badges = self.db.get_badges(self.player_id)
+        earned_keys = [b['badge_key'] for b in earned_badges]
+
+        tk.Label(badges_window,
+                 text=f"Total Catches: {total_catches} | Shiny Catches: {shiny_catches}",
+                 font=("Arial", 11)).pack(pady=5)
+
+        canvas = tk.Canvas(badges_window)
+        scrollbar = tk.Scrollbar(
+            badges_window, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        for badge_id, badge_info in BADGE_MILESTONES.items():
+            earned = badge_id in earned_keys
+
+            frame = tk.Frame(scrollable_frame, relief=tk.RAISED if earned else tk.SUNKEN,
+                             borderwidth=2, bg="gold" if earned else "lightgray")
+            frame.pack(pady=5, padx=20, fill=tk.X)
+
+            badge_text = f"{badge_info['name']}"
+            if badge_info['type'] == 'shiny':
+                progress_text = f"({shiny_catches}/{badge_info['requirement']} Shinies)"
+            else:
+                progress_text = f"({total_catches}/{badge_info['requirement']} Total)"
+
+            status = "✓ EARNED" if earned else "🔒 LOCKED"
+
+            tk.Label(frame, text=f"{badge_text} {status}",
+                     font=("Arial", 12, "bold"),
+                     bg="gold" if earned else "lightgray").pack(pady=5)
+
+            tk.Label(frame, text=progress_text,
+                     font=("Arial", 10),
+                     bg="gold" if earned else "lightgray").pack(pady=2)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+    def show_stats(self):
+        """Show analytics and statistics"""
+        stats_window = tk.Toplevel(self.root)
+        stats_window.title("📊 Statistics & Analytics")
+        stats_window.geometry("600x700")
+
+        tk.Label(stats_window, text="📊 Your Statistics",
+                 font=("Arial", 18, "bold")).pack(pady=10)
+
+        battle_stats = self.db.get_battle_stats(self.player_id)
+        caught_pokemon = self.db.get_caught_pokemon(self.player_id)
+
+        canvas = tk.Canvas(stats_window)
+        scrollbar = tk.Scrollbar(
+            stats_window, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Battle Statistics
+        battle_frame = tk.Frame(
+            scrollable_frame, relief=tk.RAISED, borderwidth=2, bg="lightblue")
+        battle_frame.pack(pady=10, padx=20, fill=tk.X)
+
+        tk.Label(battle_frame, text="⚔️ Battle Statistics",
+                 font=("Arial", 14, "bold"), bg="lightblue").pack(pady=5)
+
+        tk.Label(battle_frame, text=f"Total Battles: {battle_stats['total_battles']}",
+                 font=("Arial", 11), bg="lightblue").pack(anchor="w", padx=10)
+        tk.Label(battle_frame, text=f"Caught: {battle_stats['caught']}",
+                 font=("Arial", 11), bg="lightblue", fg="green").pack(anchor="w", padx=10)
+        tk.Label(battle_frame, text=f"Fled: {battle_stats['fled']}",
+                 font=("Arial", 11), bg="lightblue", fg="orange").pack(anchor="w", padx=10)
+        tk.Label(battle_frame, text=f"Fainted: {battle_stats['fainted']}",
+                 font=("Arial", 11), bg="lightblue", fg="red").pack(anchor="w", padx=10)
+        tk.Label(battle_frame, text=f"Catch Rate: {battle_stats['catch_rate']:.1f}%",
+                 font=("Arial", 11, "bold"), bg="lightblue").pack(anchor="w", padx=10, pady=5)
+
+        # Collection Statistics
+        collection_frame = tk.Frame(
+            scrollable_frame, relief=tk.RAISED, borderwidth=2, bg="lightgreen")
+        collection_frame.pack(pady=10, padx=20, fill=tk.X)
+
+        tk.Label(collection_frame, text="📚 Collection Statistics",
+                 font=("Arial", 14, "bold"), bg="lightgreen").pack(pady=5)
+
+        total_pokemon = len(caught_pokemon)
+        shiny_count = self.db.get_shiny_count(self.player_id)
+        legendary_count = self.db.get_legendary_count(self.player_id)
+        unique_species = len(set(p['pokemon_id'] for p in caught_pokemon))
+
+        tk.Label(collection_frame, text=f"Total Pokémon: {total_pokemon}",
+                 font=("Arial", 11), bg="lightgreen").pack(anchor="w", padx=10)
+        tk.Label(collection_frame, text=f"Unique Species: {unique_species}",
+                 font=("Arial", 11), bg="lightgreen").pack(anchor="w", padx=10)
+        tk.Label(collection_frame, text=f"Shinies: {shiny_count} ({shiny_count/max(1, total_pokemon)*100:.1f}%)",
+                 font=("Arial", 11), bg="lightgreen").pack(anchor="w", padx=10)
+        tk.Label(collection_frame, text=f"Legendaries: {legendary_count} ({legendary_count/max(1, total_pokemon)*100:.1f}%)",
+                 font=("Arial", 11), bg="lightgreen").pack(anchor="w", padx=10, pady=5)
+
+        # Player Statistics
+        player_frame = tk.Frame(
+            scrollable_frame, relief=tk.RAISED, borderwidth=2, bg="lightyellow")
+        player_frame.pack(pady=10, padx=20, fill=tk.X)
+
+        tk.Label(player_frame, text="👤 Player Statistics",
+                 font=("Arial", 14, "bold"), bg="lightyellow").pack(pady=5)
+
+        playtime = timedelta(seconds=self.player['total_playtime'])
+        hours = int(playtime.total_seconds() // 3600)
+        minutes = int((playtime.total_seconds() % 3600) // 60)
+
+        tk.Label(player_frame, text=f"Total Steps: {self.player['total_steps']:,}",
+                 font=("Arial", 11), bg="lightyellow").pack(anchor="w", padx=10)
+        tk.Label(player_frame, text=f"Total Playtime: {hours}h {minutes}m",
+                 font=("Arial", 11), bg="lightyellow").pack(anchor="w", padx=10)
+        tk.Label(player_frame, text=f"Encounters: {self.player['total_encounters']:,}",
+                 font=("Arial", 11), bg="lightyellow").pack(anchor="w", padx=10)
+
+        badges_earned = len(self.db.get_badges(self.player_id))
+        tk.Label(player_frame, text=f"Badges Earned: {badges_earned}/{len(BADGE_MILESTONES)}",
+                 font=("Arial", 11), bg="lightyellow").pack(anchor="w", padx=10, pady=5)
+
+        # Recent Catches
+        if caught_pokemon:
+            recent_frame = tk.Frame(
+                scrollable_frame, relief=tk.RAISED, borderwidth=2, bg="lavender")
+            recent_frame.pack(pady=10, padx=20, fill=tk.X)
+
+            tk.Label(recent_frame, text="🕐 Recent Catches (Last 10)",
+                     font=("Arial", 14, "bold"), bg="lavender").pack(pady=5)
+
+            for pokemon in caught_pokemon[:10]:
+                markers = ""
+                if pokemon['is_shiny']:
+                    markers += "✨"
+                if pokemon['is_legendary']:
+                    markers += "⚡"
+
+                date_str = datetime.fromisoformat(
+                    pokemon['caught_at']).strftime("%m/%d %I:%M%p")
+                text = f"{date_str} - {pokemon['pokemon_name']} {markers}"
+                tk.Label(recent_frame, text=text,
+                         font=("Arial", 10), bg="lavender").pack(anchor="w", padx=10, pady=2)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
     def show_profile(self):
         """Show player profile"""
-        created = self.profile['created_at'].strftime("%Y-%m-%d")
-        last_played = self.profile['last_played'].strftime("%Y-%m-%d %H:%M")
+        created = self.player['created_at'].strftime("%Y-%m-%d")
+        last_played = self.player['last_played'].strftime("%Y-%m-%d %H:%M")
 
         session_time = (datetime.now() - self.session_start).seconds
-        total_time = self.profile['total_playtime'] + session_time
+        total_time = self.player['total_playtime'] + session_time
         hours = int(total_time // 3600)
         minutes = int((total_time % 3600) // 60)
 
+        shiny_catches = self.db.get_shiny_count(self.player_id)
+        badge_count = len(self.db.get_badges(self.player_id))
+        caught_count = len(self.db.get_caught_pokemon(self.player_id))
+
         info = f"""
-Trainer Name: {self.profile['name']}
+Trainer Name: {self.player['name']}
 Created: {created}
 Last Played: {last_played}
 
 Total Playtime: {hours}h {minutes}m
-Total Steps: {self.profile['total_steps']}
-Total Encounters: {self.profile['total_encounters']}
-Total Catches: {self.profile['total_catches']}
+Total Steps: {self.player['total_steps']:,}
+Total Encounters: {self.player['total_encounters']:,}
+Total Catches: {self.player['total_catches']:,}
 
-Pokémon Caught: {len(self.caught_pokemon)}
-Catch Rate: {(self.profile['total_catches'] / max(1, self.profile['total_encounters']) * 100):.1f}%
+Pokémon Caught: {caught_count}
+Shiny Pokémon: {shiny_catches}
+Badges Earned: {badge_count}/{len(BADGE_MILESTONES)}
+Catch Rate: {(self.player['total_catches'] / max(1, self.player['total_encounters']) * 100):.1f}%
         """
 
         messagebox.showinfo("Trainer Profile", info)
@@ -870,8 +1484,12 @@ if __name__ == "__main__":
 
     def on_closing():
         session_time = (datetime.now() - game.session_start).seconds
-        game.profile['total_playtime'] += session_time
-        game.save_profile()
+        new_playtime = game.player['total_playtime'] + session_time
+        game.db.update_player(
+            game.player_id,
+            total_playtime=new_playtime,
+            last_played=datetime.now()
+        )
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_closing)
