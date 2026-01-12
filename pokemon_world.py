@@ -7,24 +7,74 @@ import sqlite3
 import os
 from io import BytesIO
 from datetime import datetime, timedelta
+<<<<<<< Updated upstream
+=======
+import threading
+import time
+
+# Audio imports - mixer only to avoid tkinter conflicts
+try:
+    import pygame.mixer
+    # Initialize ONLY the mixer, not pygame.init()
+    pygame.mixer.init(44100, -16, 2, 512)
+    AUDIO_AVAILABLE = True
+    print("✅ Audio system initialized")
+except ImportError:
+    AUDIO_AVAILABLE = False
+    print("⚠️ Warning: pygame not installed. Audio will be disabled.")
+    print("Install with: pip install pygame")
+except Exception as e:
+    AUDIO_AVAILABLE = False
+    print(f"⚠️ Warning: Could not initialize audio: {e}")
+
+# Firebase imports
+try:
+    import firebase_admin
+    from firebase_admin import credentials, db
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+    print("Warning: Firebase not installed. Leaderboards will be disabled.")
+    print("Install with: pip install firebase-admin")
+>>>>>>> Stashed changes
 
 # Configuration
 DATABASE_FILE = "pokemon_game.db"
 PLAYER_SPRITE_FILE = "player_sprite.png"
+<<<<<<< Updated upstream
 SHINY_CHANCE = 1/10
 ENCOUNTER_CHANCE = 0.15
 # 5% chance to flee after Poké Ball The 20% is way too high after testing.
+=======
+FIREBASE_CONFIG_FILE = "firebase-credentials.json"
+FIREBASE_DB_URL = "https://pokemonworld-5dacd-default-rtdb.firebaseio.com/"
+SHINY_CHANCE = 1/100
+# 8% chance per step 10% is way to much in my opinion. reminds me of the zubats in the caves
+ENCOUNTER_CHANCE = 0.08
+>>>>>>> Stashed changes
 FLEE_CHANCE_POKEBALL = 0.05
 
+# Audio file paths - updated to support MP3 and one Wav  file since it worked better for that
+AUDIO_FILES = {
+    'walk': 'grass.mp3',
+    'encounter_normal': 'normal.mp3',
+    'encounter_legendary': 'legendary.mp3',
+    'encounter_shiny': 'shiny.mp3',
+    'catch_success': 'catch_success.mp3',      # FIXED - removed 'sounds/' folder
+    # Wav was more convenient here. Mp3s were used for others. Should note that the mp3s were
+    'pokeball_throw': 'pokeball_throw.wav'
+    # royalty free. Don't think they had anything to do with p-mon itself.
+}
 # Legendary Pokémon IDs (Gen 1-8)
 LEGENDARY_IDS = {
     144, 145, 146, 150, 151,
     243, 244, 245, 249, 250, 251,
     377, 378, 379, 380, 381, 382, 383, 384, 385, 386,
-    480, 481, 482, 483, 484, 487, 488, 489, 490, 491, 492, 493,
-    494, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649,
+    480, 481, 482, 483, 484, 485, 487, 488, 489, 490, 491, 492, 493, 494,
+    638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649,
     716, 717, 718, 719, 720, 721,
-    772, 773, 785, 786, 787, 788, 789, 790, 791, 792, 800, 801, 802, 807, 808, 809,
+    772, 773,
+    785, 786, 787, 788, 789, 790, 791, 792, 793, 794, 795, 796, 797, 798, 799, 800, 801, 802, 803, 804, 805, 806, 807, 808, 809,
     888, 889, 890, 891, 892, 893, 894, 895, 896, 897, 898
 }
 
@@ -37,6 +87,356 @@ BADGE_MILESTONES = {
     'catch_1000': {'name': '🏆 Pokémon Master', 'requirement': 1000, 'type': 'total'},
     'catch_10000': {'name': '👑 LEGENDARY TRAINER', 'requirement': 10000, 'type': 'total'}
 }
+
+<<<<<<< Updated upstream
+=======
+if 'catch_10000' in BADGE_MILESTONES:
+    SHINY_CHANCE = 1/50
+# Biome configurations for different exploration areas
+BIOMES = {
+    'forest': {'bg': '#90EE90', 'shades': ['#90EE90', '#7CCD7C', '#A8E6A3'], 'tree_color': 'darkgreen', 'name': '🌲 Forest'},
+    'desert': {'bg': '#F4A460', 'shades': ['#F4A460', '#DEB887', '#D2B48C'], 'tree_color': '#8B7355', 'name': '🏜️ Desert'},
+    'snow': {'bg': '#F0F8FF', 'shades': ['#F0F8FF', '#E6F2FF', '#D4E9FF'], 'tree_color': '#B0C4DE', 'name': '❄️ Snow'},
+    'beach': {'bg': '#FFE4B5', 'shades': ['#FFE4B5', '#FFDEAD', '#F5DEB3'], 'tree_color': '#8B7355', 'name': '🏖️ Beach'},
+    'cave': {'bg': '#696969', 'shades': ['#696969', '#778899', '#808080'], 'tree_color': '#2F4F4F', 'name': '🗻 Cave'}
+}
+
+
+class FirebaseManager:
+    """Handle Firebase Realtime Database operations for leaderboards - FIXED VERSION"""
+
+    def __init__(self):
+        self.firebase_initialized = False
+        self.db_ref = None
+        self.last_sync_time = 0
+        self.sync_cooldown = 10  # Only sync every 10 seconds to avoid rate limits
+
+        if not FIREBASE_AVAILABLE:
+            print("❌ Firebase library not available")
+            return
+
+        try:
+            if os.path.exists(FIREBASE_CONFIG_FILE):
+                # Check if already initialized
+                if not firebase_admin._apps:
+                    cred = credentials.Certificate(FIREBASE_CONFIG_FILE)
+                    firebase_admin.initialize_app(cred, {
+                        'databaseURL': FIREBASE_DB_URL
+                    })
+
+                self.db_ref = db.reference()
+                self.firebase_initialized = True
+                print("✅ Firebase connected successfully!")
+
+                # Test the connection
+                try:
+                    test_data = self.db_ref.child('leaderboard').get()
+                    print(
+                        f"✅ Firebase test successful - found {len(test_data) if test_data else 0} players")
+                except Exception as e:
+                    print(f"⚠️ Firebase connection test failed: {e}")
+            else:
+                print(
+                    f"⚠️ Firebase config file not found: {FIREBASE_CONFIG_FILE}")
+                print("Leaderboards will be disabled.")
+        except Exception as e:
+            print(f"❌ Firebase initialization error: {e}")
+            self.firebase_initialized = False
+
+    def update_leaderboard(self, player_id, player_name, total_catches, shiny_catches):
+        """Update player's leaderboard entry in background with rate limiting"""
+        if not self.firebase_initialized:
+            return False
+
+        # Rate limiting - only sync every 10 seconds
+        current_time = time.time()
+        if current_time - self.last_sync_time < self.sync_cooldown:
+            print(
+                f"⏳ Skipping Firebase sync (cooldown: {self.sync_cooldown}s)")
+            return False
+
+        self.last_sync_time = current_time
+
+        def _update():
+            try:
+                # Use milliseconds timestamp for rate limiting
+                import time
+                timestamp_ms = int(time.time() * 1000)
+
+                player_data = {
+                    'name': player_name,
+                    'total_catches': total_catches,
+                    'shiny_catches': shiny_catches,
+                    'last_updated': timestamp_ms  # Milliseconds timestamp for rate limiting
+                }
+
+                self.db_ref.child('leaderboard').child(
+                    str(player_id)).set(player_data)
+                print(
+                    f"✅ Synced to Firebase: {player_name} ({total_catches} catches, {shiny_catches} shinies)")
+            except Exception as e:
+                print(f"❌ Error updating leaderboard: {e}")
+
+        # Run in background thread to avoid blocking game
+        thread = threading.Thread(target=_update, daemon=True)
+        thread.start()
+        return True
+
+    def get_top_total_catches(self, limit=100):
+        """Get top players by total catches - FIXED FOR LIST FORMAT"""
+        if not self.firebase_initialized:
+            print("❌ Firebase not initialized")
+            return []
+
+        try:
+            print("🔄 Fetching total catches leaderboard from Firebase...")
+            ref = self.db_ref.child('leaderboard')
+            data = ref.order_by_child(
+                'total_catches').limit_to_last(limit).get()
+
+            print(f"📊 Firebase returned data type: {type(data)}")
+            print(f"📊 Firebase data: {data}")
+
+            # Check if we got valid data
+            if data is None:
+                print("⚠️ Firebase returned None - no data yet")
+                return []
+
+            leaderboard = []
+
+            # Firebase can return either a dict OR a list depending on how data is stored
+            if isinstance(data, dict):
+                print("✅ Processing as dictionary")
+                for player_id, player_data in data.items():
+                    if not isinstance(player_data, dict):
+                        print(
+                            f"⚠️ Skipping invalid player data for ID {player_id}")
+                        continue
+
+                    leaderboard.append({
+                        'player_id': player_id,
+                        'name': player_data.get('name', 'Unknown'),
+                        'total_catches': player_data.get('total_catches', 0),
+                        'shiny_catches': player_data.get('shiny_catches', 0)
+                    })
+
+            elif isinstance(data, list):
+                print("✅ Processing as list")
+                for index, player_data in enumerate(data):
+                    # Skip None entries
+                    if player_data is None:
+                        continue
+
+                    if not isinstance(player_data, dict):
+                        print(
+                            f"⚠️ Skipping invalid player data at index {index}")
+                        continue
+
+                    leaderboard.append({
+                        'player_id': index,  # Use list index as player_id
+                        'name': player_data.get('name', 'Unknown'),
+                        'total_catches': player_data.get('total_catches', 0),
+                        'shiny_catches': player_data.get('shiny_catches', 0)
+                    })
+            else:
+                print(f"⚠️ Firebase returned unexpected type: {type(data)}")
+                return []
+
+            # Sort by total catches descending
+            leaderboard.sort(key=lambda x: x['total_catches'], reverse=True)
+            print(f"✅ Loaded {len(leaderboard)} players from leaderboard")
+            return leaderboard
+
+        except Exception as e:
+            print(f"❌ Error getting total catches leaderboard: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    def get_top_shiny_catches(self, limit=100):
+        """Get top players by shiny catches - FIXED FOR LIST FORMAT"""
+        if not self.firebase_initialized:
+            print("❌ Firebase not initialized")
+            return []
+
+        try:
+            print("🔄 Fetching shiny catches leaderboard from Firebase...")
+            ref = self.db_ref.child('leaderboard')
+            data = ref.order_by_child(
+                'shiny_catches').limit_to_last(limit).get()
+
+            print(f"📊 Firebase returned data type: {type(data)}")
+
+            # Check if we got valid data
+            if data is None:
+                print("⚠️ Firebase returned None - no data yet")
+                return []
+
+            leaderboard = []
+
+            # Firebase can return either a dict OR a list depending on how data is stored
+            if isinstance(data, dict):
+                print("✅ Processing as dictionary")
+                for player_id, player_data in data.items():
+                    if not isinstance(player_data, dict):
+                        print(
+                            f"⚠️ Skipping invalid player data for ID {player_id}")
+                        continue
+
+                    shiny_count = player_data.get('shiny_catches', 0)
+                    # Only include players with at least 1 shiny
+                    if shiny_count > 0:
+                        leaderboard.append({
+                            'player_id': player_id,
+                            'name': player_data.get('name', 'Unknown'),
+                            'total_catches': player_data.get('total_catches', 0),
+                            'shiny_catches': shiny_count
+                        })
+
+            elif isinstance(data, list):
+                print("✅ Processing as list")
+                for index, player_data in enumerate(data):
+                    # Skip None entries
+                    if player_data is None:
+                        continue
+
+                    if not isinstance(player_data, dict):
+                        print(
+                            f"⚠️ Skipping invalid player data at index {index}")
+                        continue
+
+                    shiny_count = player_data.get('shiny_catches', 0)
+                    # Only include players with at least 1 shiny
+                    if shiny_count > 0:
+                        leaderboard.append({
+                            'player_id': index,  # Use list index as player_id
+                            'name': player_data.get('name', 'Unknown'),
+                            'total_catches': player_data.get('total_catches', 0),
+                            'shiny_catches': shiny_count
+                        })
+            else:
+                print(f"⚠️ Firebase returned unexpected type: {type(data)}")
+                return []
+
+            # Sort by shiny catches descending
+            leaderboard.sort(key=lambda x: x['shiny_catches'], reverse=True)
+            print(
+                f"✅ Loaded {len(leaderboard)} players with shinies from leaderboard")
+            return leaderboard
+
+        except Exception as e:
+            print(f"❌ Error getting shiny catches leaderboard: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    def get_player_rank(self, player_id, category='total'):
+        """Get player's rank in specified category"""
+        if not self.firebase_initialized:
+            return None
+
+        try:
+            if category == 'total':
+                leaderboard = self.get_top_total_catches(limit=10000)
+            else:
+                leaderboard = self.get_top_shiny_catches(limit=10000)
+
+            for rank, player in enumerate(leaderboard, 1):
+                if str(player['player_id']) == str(player_id):
+                    return rank
+
+            return None
+        except Exception as e:
+            print(f"❌ Error getting player rank: {e}")
+            return None
+
+>>>>>>> Stashed changes
+
+class AudioManager:
+    """Handle all game audio with volume control - supports both WAV and MP3"""
+
+    def __init__(self):
+        self.audio_enabled = True
+        self.volume = 0.7  # 0.0 to 1.0 - default to 70% volume
+        self.sounds = {}
+        self.audio_available = AUDIO_AVAILABLE
+
+        if not self.audio_available:
+            print("⚠️ Audio system not available - install pygame: pip install pygame")
+            return
+
+        # Load sound effects
+        self.load_sounds()
+
+    def load_sounds(self):
+        """Load all sound files (supports WAV and MP3)"""
+        if not self.audio_available:
+            return
+
+        print("\n🔊 Loading audio files...")
+        loaded = 0
+
+        for sound_name, filepath in AUDIO_FILES.items():
+            try:
+                if os.path.exists(filepath):
+                    # Load the sound
+                    sound = pygame.mixer.Sound(filepath)
+                    sound.set_volume(self.volume)
+                    self.sounds[sound_name] = sound
+                    print(f"   ✅ {sound_name}: {filepath}")
+                    loaded += 1
+                else:
+                    print(f"   ⚠️ {sound_name}: FILE NOT FOUND ({filepath})")
+            except Exception as e:
+                print(f"   ❌ {sound_name}: Error - {e}")
+
+        print(
+            f"🔊 Audio System Ready: {loaded}/{len(AUDIO_FILES)} sounds loaded\n")
+
+        if loaded == 0:
+            print("⚠️ No audio files found! Game will run without sound.")
+
+    def play(self, sound_name):
+        """Play a sound effect"""
+        if not self.audio_available:
+            return
+
+        if not self.audio_enabled:
+            return
+
+        if sound_name in self.sounds:
+            try:
+                # Stop the sound first if it's already playing (for walk sounds)
+                if sound_name == 'walk':
+                    self.sounds[sound_name].stop()
+                # Play the sound
+                self.sounds[sound_name].play()
+            except Exception as e:
+                print(f"❌ Error playing {sound_name}: {e}")
+        else:
+            # Don't spam warnings for missing optional sounds
+            if sound_name not in ['catch_success', 'pokeball_throw']:
+                print(f"⚠️ Sound '{sound_name}' not loaded")
+
+    def set_volume(self, volume):
+        """Set volume (0.0 to 1.0)"""
+        self.volume = max(0.0, min(1.0, volume))
+
+        if self.audio_available:
+            for sound in self.sounds.values():
+                sound.set_volume(self.volume)
+            print(f"🔊 Volume set to {int(self.volume * 100)}%")
+
+    def toggle_audio(self):
+        """Toggle audio on/off"""
+        self.audio_enabled = not self.audio_enabled
+        status = "ON" if self.audio_enabled else "OFF"
+        print(f"🔊 Audio toggled {status}")
+        return self.audio_enabled
+
+    def is_enabled(self):
+        """Check if audio is enabled"""
+        return self.audio_enabled and self.audio_available
 
 
 class Database:
@@ -209,8 +609,9 @@ class Database:
 
         now = datetime.now().isoformat()
         cursor.execute('''
-            INSERT INTO caught_pokemon 
-            (player_id, pokemon_id, pokemon_name, is_shiny, is_legendary, caught_at)
+            INSERT INTO caught_pokemon
+            (player_id, pokemon_id, pokemon_name,
+             is_shiny, is_legendary, caught_at)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (player_id, pokemon_id, pokemon_name, is_shiny, is_legendary, now))
 
@@ -319,8 +720,9 @@ class Database:
 
         now = datetime.now().isoformat()
         cursor.execute('''
-            INSERT INTO battles 
-            (player_id, pokemon_id, pokemon_name, is_shiny, is_legendary, result, attempts, timestamp)
+            INSERT INTO battles
+            (player_id, pokemon_id, pokemon_name, is_shiny,
+             is_legendary, result, attempts, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', (player_id, pokemon_id, pokemon_name, is_shiny, is_legendary, result, attempts, now))
 
@@ -376,16 +778,15 @@ class PixelArtCreator:
         self.pixel_size = 20
         self.current_color = "#0000FF"
 
-        self.grid = [["white" for _ in range(self.grid_size)]
-                     for _ in range(self.grid_size)]
+        self.grid = [["white" for _ in range(
+            self.grid_size)] for _ in range(self.grid_size)]
 
         tk.Label(self.window, text="Create Your Pixel Art Character",
                  font=("Arial", 16, "bold")).pack(pady=10)
 
         canvas_size = self.grid_size * self.pixel_size
-        self.canvas = tk.Canvas(self.window, width=canvas_size,
-                                height=canvas_size, bg="white",
-                                highlightthickness=2, highlightbackground="black")
+        self.canvas = tk.Canvas(self.window, width=canvas_size, height=canvas_size,
+                                bg="white", highlightthickness=2, highlightbackground="black")
         self.canvas.pack(pady=10)
         self.canvas.bind("<Button-1>", self.paint_pixel)
         self.canvas.bind("<B1-Motion>", self.paint_pixel)
@@ -456,8 +857,8 @@ class PixelArtCreator:
 
     def clear(self):
         self.canvas.delete("all")
-        self.grid = [["white" for _ in range(self.grid_size)]
-                     for _ in range(self.grid_size)]
+        self.grid = [["white" for _ in range(
+            self.grid_size)] for _ in range(self.grid_size)]
 
     def save(self):
         img = Image.new("RGBA", (self.grid_size, self.grid_size))
@@ -488,6 +889,15 @@ class PokemonCatchingGame:
         # Initialize database
         self.db = Database(DATABASE_FILE)
 
+<<<<<<< Updated upstream
+=======
+        # Initialize Firebase
+        self.firebase = FirebaseManager()
+
+        # Initialize Audio
+        self.audio = AudioManager()
+
+>>>>>>> Stashed changes
         # Load or create player
         self.player = self.db.get_latest_player()
         if not self.player:
@@ -516,6 +926,26 @@ class PokemonCatchingGame:
         # Start in exploration mode
         self.exploration_mode()
 
+<<<<<<< Updated upstream
+=======
+        # Sync to Firebase on startup
+        self.sync_to_firebase()
+
+    def sync_to_firebase(self):
+        """Sync player stats to Firebase leaderboard"""
+        if self.firebase.firebase_initialized:
+            total_catches = self.player['total_catches']
+            shiny_catches = self.db.get_shiny_count(self.player_id)
+            print(
+                f"🔄 Syncing to Firebase: {self.player['name']} - {total_catches} catches, {shiny_catches} shinies")
+            self.firebase.update_leaderboard(
+                self.player_id,
+                self.player['name'],
+                total_catches,
+                shiny_catches
+            )
+
+>>>>>>> Stashed changes
     def create_profile(self):
         """Create new player profile"""
         name = simpledialog.askstring(
@@ -593,8 +1023,8 @@ class PokemonCatchingGame:
                     if os.path.exists(PLAYER_SPRITE_FILE):
                         os.remove(PLAYER_SPRITE_FILE)
 
-                    messagebox.showinfo(
-                        "Profile Deleted", "All data has been deleted.")
+                    messagebox.showinfo("Profile Deleted",
+                                        "All data has been deleted.")
 
                     self.create_profile()
 
@@ -721,7 +1151,134 @@ class PokemonCatchingGame:
                   bg="#FF6B6B",
                   width=9).pack(side=tk.LEFT, padx=2)
 
+<<<<<<< Updated upstream
+=======
+        tk.Button(row2, text="🏆 Leaderboard",
+                  font=("Arial", 10),
+                  command=self.show_leaderboards,
+                  bg="#F7E168",
+                  width=11).pack(side=tk.LEFT, padx=2)
+
+        # Third row - Audio controls
+        row3 = tk.Frame(bottom_frame)
+        row3.pack(pady=2)
+
+        self.audio_button = tk.Button(row3, text="🔊 Audio: ON",
+                                      font=("Arial", 10),
+                                      command=self.toggle_audio,
+                                      bg="#90EE90",
+                                      width=12)
+        self.audio_button.pack(side=tk.LEFT, padx=2)
+
+        # Update audio button text based on current state
+        self.update_audio_button()
+
+        tk.Button(row3, text="🔧 Settings",
+                  font=("Arial", 10),
+                  command=self.show_settings,
+                  width=12).pack(side=tk.LEFT, padx=2)
+
+>>>>>>> Stashed changes
         self.root.bind('<KeyPress>', self.handle_keypress)
+
+    def toggle_audio(self):
+        """Toggle audio on/off"""
+        is_enabled = self.audio.toggle_audio()
+        self.update_audio_button()
+
+        status = "ON" if is_enabled else "OFF"
+        self.show_message(f"🔊 Audio {status}")
+
+    def update_audio_button(self):
+        """Update audio button appearance"""
+        if self.audio.is_enabled():
+            self.audio_button.config(text="🔊 Audio: ON", bg="#90EE90")
+        else:
+            self.audio_button.config(text="🔇 Audio: OFF", bg="#FFB6B6")
+
+    def show_settings(self):
+        """Show settings window with volume control"""
+        settings_window = tk.Toplevel(self.root)
+        settings_window.title("⚙️ Settings")
+        settings_window.geometry("400x400")
+
+        tk.Label(settings_window, text="⚙️ Game Settings",
+                 font=("Arial", 18, "bold")).pack(pady=20)
+
+        # Audio settings frame
+        audio_frame = tk.Frame(
+            settings_window, relief=tk.RAISED, borderwidth=2, bg="lightblue")
+        audio_frame.pack(pady=10, padx=20, fill=tk.X)
+
+        tk.Label(audio_frame, text="🔊 Audio Settings",
+                 font=("Arial", 14, "bold"), bg="lightblue").pack(pady=10)
+
+        # Audio toggle
+        audio_status = "✅ Enabled" if self.audio.is_enabled() else "❌ Disabled"
+        audio_label = tk.Label(audio_frame, text=f"Status: {audio_status}",
+                               font=("Arial", 11), bg="lightblue")
+        audio_label.pack(pady=5)
+
+        def toggle_and_update():
+            self.toggle_audio()
+            new_status = "✅ Enabled" if self.audio.is_enabled() else "❌ Disabled"
+            audio_label.config(text=f"Status: {new_status}")
+
+        tk.Button(audio_frame, text="Toggle Audio On/Off",
+                  command=toggle_and_update,
+                  font=("Arial", 11)).pack(pady=5)
+
+        # Test sound button
+        def test_sound():
+            if 'walk' in self.audio.sounds:
+                self.audio.play('walk')
+                messagebox.showinfo(
+                    "Test", "Playing grass sound!\nDid you hear it?")
+            else:
+                messagebox.showwarning("Test", "No sounds loaded to test!")
+
+        tk.Button(audio_frame, text="🔊 Test Sound",
+                  command=test_sound,
+                  bg="#90EE90",
+                  font=("Arial", 11)).pack(pady=5)
+
+        # Volume slider
+        tk.Label(audio_frame, text="Volume:",
+                 font=("Arial", 11), bg="lightblue").pack(pady=5)
+
+        volume_var = tk.DoubleVar(value=self.audio.volume * 100)
+
+        def update_volume(val):
+            self.audio.set_volume(float(val) / 100)
+
+        volume_slider = tk.Scale(audio_frame, from_=0, to=100,
+                                 orient=tk.HORIZONTAL,
+                                 variable=volume_var,
+                                 command=update_volume,
+                                 length=250,
+                                 bg="lightblue")
+        volume_slider.pack(pady=5)
+
+        # Audio file info
+        info_frame = tk.Frame(
+            settings_window, relief=tk.RAISED, borderwidth=2, bg="lightyellow")
+        info_frame.pack(pady=10, padx=20, fill=tk.BOTH, expand=True)
+
+        tk.Label(info_frame, text="📁 Audio Files Status",
+                 font=("Arial", 12, "bold"), bg="lightyellow").pack(pady=5)
+
+        loaded_count = len(self.audio.sounds)
+        total_count = len(AUDIO_FILES)
+
+        tk.Label(info_frame, text=f"Loaded: {loaded_count}/{total_count} sound files",
+                 font=("Arial", 10, "bold"), bg="lightyellow").pack(pady=5)
+
+        # Show which files are loaded
+        for sound_name, filepath in AUDIO_FILES.items():
+            status = "✅" if sound_name in self.audio.sounds else "❌"
+            display_name = sound_name.replace('_', ' ').title()
+            tk.Label(info_frame, text=f"{status} {display_name}: {filepath}",
+                     font=("Arial", 9), bg="lightyellow", anchor="w").pack(padx=20, pady=2)
 
     def update_profile_display(self):
         """Update profile info display"""
@@ -766,9 +1323,12 @@ class PokemonCatchingGame:
         self.player['total_steps'] = new_steps
         self.update_stats()
 
+        # Play walking sound
+        self.audio.play('walk')
+
         if hasattr(self, 'exploration_canvas'):
-            self.exploration_canvas.coords(self.player_sprite_id,
-                                           self.player_x, self.player_y)
+            self.exploration_canvas.coords(
+                self.player_sprite_id, self.player_x, self.player_y)
 
         if random.random() < ENCOUNTER_CHANCE:
             self.encounter_pokemon()
@@ -784,16 +1344,15 @@ class PokemonCatchingGame:
 
         self.content_frame.config(bg="lightgreen")
 
-        self.exploration_canvas = tk.Canvas(self.content_frame,
-                                            width=600, height=500,
-                                            bg="#90EE90")
+        self.exploration_canvas = tk.Canvas(
+            self.content_frame, width=600, height=500, bg="#90EE90")
         self.exploration_canvas.pack(fill=tk.BOTH, expand=True)
 
         for i in range(0, 600, 40):
             for j in range(0, 500, 40):
                 shade = random.choice(["#90EE90", "#7CCD7C", "#A8E6A3"])
-                self.exploration_canvas.create_rectangle(i, j, i+40, j+40,
-                                                         fill=shade, outline="")
+                self.exploration_canvas.create_rectangle(
+                    i, j, i+40, j+40, fill=shade, outline="")
 
         for _ in range(15):
             x = random.randint(50, 550)
@@ -830,6 +1389,14 @@ class PokemonCatchingGame:
         is_shiny = random.random() < SHINY_CHANCE
         is_legendary = pokemon_id in LEGENDARY_IDS
 
+        # Play encounter sound - priority: Shiny > Legendary > Normal
+        if is_shiny:
+            self.audio.play('encounter_shiny')
+        elif is_legendary:
+            self.audio.play('encounter_legendary')
+        else:
+            self.audio.play('encounter_normal')
+
         try:
             response = requests.get(
                 f"https://pokeapi.co/api/v2/pokemon/{pokemon_id}")
@@ -863,8 +1430,10 @@ class PokemonCatchingGame:
 
         if self.current_pokemon['is_legendary']:
             bg_color = "#2D1B4E"
-        else:
-            bg_color = "#FFFACD"
+        else:  # creating a selection of random lighter colors that can be picked on random when other pokemon appear
+            lighter_colors = ["#FFFACD", "#FFEBB7",
+                              "#FFFFE0", "#F0E68C", "#9F663B"]
+            bg_color = random.choice(lighter_colors)
 
         self.content_frame.config(bg=bg_color)
 
@@ -934,8 +1503,8 @@ class PokemonCatchingGame:
                  bg=bg_color,
                  fg="white" if self.current_pokemon['is_legendary'] else "black").pack(side=tk.LEFT)
 
-        self.health_bar = tk.Canvas(health_frame, width=300, height=25,
-                                    bg="white", highlightthickness=1)
+        self.health_bar = tk.Canvas(
+            health_frame, width=300, height=25, bg="white", highlightthickness=1)
         self.health_bar.pack(side=tk.LEFT, padx=5)
 
         self.health_text = tk.Label(health_frame, text="100/100",
@@ -951,7 +1520,7 @@ class PokemonCatchingGame:
         row1 = tk.Frame(actions_frame, bg=bg_color)
         row1.pack(pady=5)
 
-        tk.Button(row1, text="🍎 Use Bait",
+        tk.Button(row1, text="🎁 Use Bait",
                   font=("Arial", 13),
                   bg="#90EE90",
                   command=self.use_bait,
@@ -1024,7 +1593,7 @@ class PokemonCatchingGame:
 
         self.update_health_bar()
         self.show_message(
-            f"🍎 Used Bait! {self.current_pokemon['name']} gained 20 HP and feels calmer.")
+            f"🎁 Used Bait! {self.current_pokemon['name']} gained 20 HP and feels calmer.")
 
     def throw_rock(self):
         """Throw rock to damage Pokémon, with flee chance"""
@@ -1037,8 +1606,7 @@ class PokemonCatchingGame:
         self.update_health_bar()
 
         if self.pokemon_health <= 0:
-            self.show_message(
-                f"💀 {self.current_pokemon['name']} fainted!")
+            self.show_message(f"💀 {self.current_pokemon['name']} fainted!")
             messagebox.showinfo("Fainted!",
                                 f"{self.current_pokemon['name']} has fainted!\n\nYou cannot catch a fainted Pokémon.")
 
@@ -1111,6 +1679,9 @@ class PokemonCatchingGame:
         catch_rate = self.calculate_catch_rate()
         catch_roll = random.random()
 
+        # Play pokeball throw sound
+        self.audio.play('pokeball_throw')
+
         self.show_message("🔴 The Pokéball wobbles...")
         self.root.update()
         self.root.after(800)
@@ -1145,6 +1716,9 @@ class PokemonCatchingGame:
 
     def catch_success(self):
         """Handle successful catch"""
+        # Play catch success sound
+        self.audio.play('catch_success')
+
         self.db.add_caught_pokemon(
             self.player_id,
             self.current_pokemon['id'],
@@ -1220,8 +1794,7 @@ class PokemonCatchingGame:
         """Update stats display"""
         caught_count = len(self.db.get_caught_pokemon(self.player_id))
         self.stats_label.config(
-            text=f"Pokédex: {caught_count} | Steps: {self.steps}"
-        )
+            text=f"Pokédex: {caught_count} | Steps: {self.steps}")
 
     def show_pokedex(self):
         """Show caught Pokémon"""
